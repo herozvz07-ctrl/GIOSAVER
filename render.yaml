@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: GIOSAVER
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    buildpacks:
+      - github.com/jonathanong/heroku-buildpack-ffmpeg-latest
+      - render/python
+      
