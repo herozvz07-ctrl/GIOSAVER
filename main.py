@@ -1,10 +1,13 @@
 import os
 import logging
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import requests
 from flask import Flask
 import threading
+import subprocess
+import tempfile
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -22,7 +25,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # Токен бота (замените на свой)
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 
 # ID обязательных каналов для подписки
 REQUIRED_CHANNELS = os.environ.get('CHANNELS', '').split(',')
@@ -30,49 +33,58 @@ REQUIRED_CHANNELS = os.environ.get('CHANNELS', '').split(',')
 # Тексты на разных языках
 TEXTS = {
     'ru': {
-        'start': '🎵 Добро пожаловать в Music Bot!\n\nОтправьте мне название песни для поиска.',
+        'start': '🎵 Добро пожаловать в Music Bot!\n\n📝 Отправьте название песни для поиска\n🔗 Или ссылку на TikTok/Instagram для скачивания',
         'subscribe': '❌ Для использования бота подпишитесь на наши каналы:\n\n',
-        'subscribed': '✅ Спасибо за подписку! Теперь отправьте название песни.',
+        'subscribed': '✅ Спасибо за подписку! Теперь отправьте название песни или ссылку.',
         'searching': '🔍 Ищу: {}...',
         'found': '🎵 Найдено {} результатов:',
         'select': 'Выберите трек:',
         'downloading': '⏬ Загружаю...',
+        'downloading_video': '⏬ Скачиваю видео...\nЭто может занять до 30 секунд',
         'error': '❌ Ошибка: {}',
         'no_results': '😔 Ничего не найдено по запросу: {}',
         'settings': '⚙️ Настройки\n\nВыберите язык:',
         'lang_changed': '✅ Язык изменен на Русский',
-        'top': '🔥 Топ хиты сегодня:',
-        'check_sub': '✅ Проверить подписку'
+        'top': '🔥 Топ хиты сегодня:\n\nНажмите на кнопку для скачивания:',
+        'check_sub': '✅ Проверить подписку',
+        'video_success': '✅ Видео успешно скачано!',
+        'video_error': '❌ Не удалось скачать видео. Попробуйте другую ссылку.'
     },
     'en': {
-        'start': '🎵 Welcome to Music Bot!\n\nSend me a song name to search.',
+        'start': '🎵 Welcome to Music Bot!\n\n📝 Send song name to search\n🔗 Or TikTok/Instagram link to download',
         'subscribe': '❌ Please subscribe to our channels to use the bot:\n\n',
-        'subscribed': '✅ Thanks for subscribing! Now send a song name.',
+        'subscribed': '✅ Thanks for subscribing! Now send a song name or link.',
         'searching': '🔍 Searching: {}...',
         'found': '🎵 Found {} results:',
         'select': 'Select a track:',
         'downloading': '⏬ Downloading...',
+        'downloading_video': '⏬ Downloading video...\nThis may take up to 30 seconds',
         'error': '❌ Error: {}',
         'no_results': '😔 No results found for: {}',
         'settings': '⚙️ Settings\n\nSelect language:',
         'lang_changed': '✅ Language changed to English',
-        'top': '🔥 Top hits today:',
-        'check_sub': '✅ Check subscription'
+        'top': '🔥 Top hits today:\n\nClick button to download:',
+        'check_sub': '✅ Check subscription',
+        'video_success': '✅ Video downloaded successfully!',
+        'video_error': '❌ Failed to download video. Try another link.'
     },
     'uz': {
-        'start': '🎵 Music Bot ga xush kelibsiz!\n\nQo\'shiq nomini yuboring.',
+        'start': '🎵 Music Bot ga xush kelibsiz!\n\n📝 Qo\'shiq nomini yuboring\n🔗 Yoki TikTok/Instagram havolasini yuboring',
         'subscribe': '❌ Botdan foydalanish uchun kanallarimizga obuna bo\'ling:\n\n',
-        'subscribed': '✅ Obuna bo\'lganingiz uchun rahmat! Endi qo\'shiq nomini yuboring.',
+        'subscribed': '✅ Obuna bo\'lganingiz uchun rahmat! Endi qo\'shiq yoki havola yuboring.',
         'searching': '🔍 Qidirilmoqda: {}...',
         'found': '🎵 {} natija topildi:',
         'select': 'Trekni tanlang:',
         'downloading': '⏬ Yuklanmoqda...',
+        'downloading_video': '⏬ Video yuklanmoqda...\nBu 30 soniyagacha davom etishi mumkin',
         'error': '❌ Xatolik: {}',
         'no_results': '😔 Hech narsa topilmadi: {}',
         'settings': '⚙️ Sozlamalar\n\nTilni tanlang:',
         'lang_changed': '✅ Til O\'zbekchaga o\'zgartirildi',
-        'top': '🔥 Bugungi top qo\'shiqlar:',
-        'check_sub': '✅ Obunani tekshirish'
+        'top': '🔥 Bugungi top qo\'shiqlar:\n\nYuklash uchun tugmani bosing:',
+        'check_sub': '✅ Obunani tekshirish',
+        'video_success': '✅ Video muvaffaqiyatli yuklandi!',
+        'video_error': '❌ Videoni yuklab bo\'lmadi. Boshqa havola sinab ko\'ring.'
     }
 }
 
@@ -85,6 +97,12 @@ def get_user_lang(user_id):
 def get_text(user_id, key):
     lang = get_user_lang(user_id)
     return TEXTS[lang][key]
+
+# Форматирование длительности
+def format_duration(seconds):
+    minutes = seconds // 60
+    remaining_seconds = seconds % 60
+    return f"{minutes}:{remaining_seconds:02d}"
 
 # Проверка подписки на каналы
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,6 +123,52 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
             continue
     
     return True
+
+# Проверка на наличие ссылки
+def is_video_link(text):
+    patterns = [
+        r'tiktok\.com',
+        r'vm\.tiktok\.com',
+        r'instagram\.com',
+        r'instagr\.am'
+    ]
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+# Скачивание видео через yt-dlp
+async def download_video(url):
+    """Скачивание видео с TikTok/Instagram через yt-dlp"""
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = os.path.join(temp_dir, 'video.mp4')
+            
+            # Команда yt-dlp для скачивания без водяного знака
+            command = [
+                'yt-dlp',
+                '-f', 'best',
+                '--no-warnings',
+                '--quiet',
+                '-o', output_path,
+                url
+            ]
+            
+            # Запускаем команду
+            result = subprocess.run(command, capture_output=True, timeout=60)
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                # Читаем файл
+                with open(output_path, 'rb') as f:
+                    video_data = f.read()
+                return video_data
+            else:
+                logger.error(f"yt-dlp error: {result.stderr.decode()}")
+                return None
+                
+    except subprocess.TimeoutExpired:
+        logger.error("yt-dlp timeout")
+        return None
+    except Exception as e:
+        logger.error(f"Download video error: {e}")
+        return None
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,7 +203,7 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# Команда /top
+# Команда /top с возможностью скачать
 async def top_hits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -148,22 +212,61 @@ async def top_hits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_text(user_id, 'subscribe'), reply_markup=InlineKeyboardMarkup(keyboard))
         return
     
-    # Топ хиты (примерный список)
-    top_songs = [
-        "🎵 1. INSTASAMKA - За деньги да",
-        "🎵 2. Miyagi & Andy Panda - Kosandra",
-        "🎵 3. Скриптонит - Положение",
-        "🎵 4. Элджей - Розовое вино",
-        "🎵 5. Моргенштерн - Cadillac",
-        "🎵 6. JONY - Комета",
-        "🎵 7. Баста - Сансара",
-        "🎵 8. Zivert - Life",
-        "🎵 9. HammAli & Navai - Прятки",
-        "🎵 10. T-Fest - Улети"
+    # Топ хиты - поиск через API
+    top_queries = [
+        "INSTASAMKA За деньги да",
+        "Miyagi Kosandra",
+        "Скриптонит Положение",
+        "Элджей Розовое вино",
+        "Моргенштерн Cadillac",
+        "JONY Комета",
+        "Баста Сансара",
+        "Zivert Life",
+        "HammAli Navai Прятки",
+        "T-Fest Улети"
     ]
     
-    text = get_text(user_id, 'top') + '\n\n' + '\n'.join(top_songs)
-    await update.message.reply_text(text)
+    # Ищем каждый трек
+    status_msg = await update.message.reply_text('🔍 Загружаю топ хиты...')
+    
+    top_results = []
+    for query in top_queries:
+        results = await search_music(query, limit=1)
+        if results:
+            top_results.append(results[0])
+    
+    if not top_results:
+        await status_msg.edit_text('❌ Не удалось загрузить топ хиты')
+        return
+    
+    # Сохраняем результаты
+    context.user_data['top_results'] = top_results
+    
+    # Формируем сообщение
+    text = get_text(user_id, 'top') + '\n\n'
+    
+    for idx, track in enumerate(top_results, 1):
+        artist = track.get('artist', {}).get('name', 'Unknown')
+        title = track.get('title', 'Unknown')
+        duration_sec = track.get('duration', 0)
+        duration_formatted = format_duration(duration_sec)
+        text += f"{idx}. {artist} - {title} ({duration_formatted})\n"
+    
+    # Создаем клавиатуру
+    keyboard = []
+    row = []
+    for i in range(1, min(len(top_results) + 1, 11)):
+        emoji_number = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'][i-1]
+        row.append(InlineKeyboardButton(emoji_number, callback_data=f'top_{i-1}'))
+        
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
+    
+    if row:
+        keyboard.append(row)
+    
+    await status_msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Поиск музыки через API
 async def search_music(query, limit=10):
@@ -200,17 +303,41 @@ async def download_music(track_url, track_id):
         logger.error(f"Download error: {e}")
         return None
 
-# Обработка текстовых сообщений (поиск)
+# Обработка текстовых сообщений (поиск или ссылки)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    query = update.message.text
+    text = update.message.text
     
+    # Проверяем подписку
     if not await check_subscription(update, context):
         keyboard = [[InlineKeyboardButton(get_text(user_id, 'check_sub'), callback_data='check_sub')]]
         await update.message.reply_text(get_text(user_id, 'subscribe'), reply_markup=InlineKeyboardMarkup(keyboard))
         return
     
-    # Показываем статус поиска
+    # Если это ссылка на видео
+    if is_video_link(text):
+        status_msg = await update.message.reply_text(get_text(user_id, 'downloading_video'))
+        
+        video_data = await download_video(text)
+        
+        if video_data:
+            try:
+                await update.message.reply_video(
+                    video=video_data,
+                    supports_streaming=True,
+                    caption=get_text(user_id, 'video_success')
+                )
+                await status_msg.delete()
+            except Exception as e:
+                logger.error(f"Error sending video: {e}")
+                await status_msg.edit_text(get_text(user_id, 'video_error'))
+        else:
+            await status_msg.edit_text(get_text(user_id, 'video_error'))
+        
+        return
+    
+    # Иначе это поиск музыки
+    query = text
     status_msg = await update.message.reply_text(get_text(user_id, 'searching').format(query))
     
     # Ищем музыку
@@ -229,7 +356,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for idx, track in enumerate(results[:10], 1):
         artist = track.get('artist', {}).get('name', 'Unknown')
         title = track.get('title', 'Unknown')
-        text += f"{idx}. {artist} - {title}\n"
+        duration_sec = track.get('duration', 0)
+        duration_formatted = format_duration(duration_sec)
+        # Добавляем длительность в строку
+        text += f"{idx}. {artist} - {title} ({duration_formatted})\n"
     
     text += '\n' + get_text(user_id, 'select')
     
@@ -271,7 +401,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(get_text(user_id, 'subscribe'), show_alert=True)
         return
     
-    # Скачивание трека
+    # Скачивание из топа
+    if query.data.startswith('top_'):
+        if not await check_subscription(update, context):
+            keyboard = [[InlineKeyboardButton(get_text(user_id, 'check_sub'), callback_data='check_sub')]]
+            await query.edit_message_text(get_text(user_id, 'subscribe'), reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        track_index = int(query.data.split('_')[1])
+        results = context.user_data.get('top_results', [])
+        
+        if track_index < len(results):
+            track = results[track_index]
+            track_id = track.get('id')
+            artist = track.get('artist', {}).get('name', 'Unknown')
+            title = track.get('title', 'Unknown')
+            
+            await query.edit_message_text(get_text(user_id, 'downloading'))
+            
+            audio_data = await download_music(track.get('link'), track_id)
+            
+            if audio_data:
+                await context.bot.send_audio(
+                    chat_id=user_id,
+                    audio=audio_data,
+                    title=title,
+                    performer=artist,
+                    duration=30,
+                    filename=f"{artist} - {title}.mp3"
+                )
+                await query.message.delete()
+            else:
+                await query.edit_message_text(get_text(user_id, 'error').format('Не удалось скачать трек'))
+        return
+    
+    # Скачивание трека из поиска
     if query.data.startswith('download_'):
         if not await check_subscription(update, context):
             keyboard = [[InlineKeyboardButton(get_text(user_id, 'check_sub'), callback_data='check_sub')]]
@@ -311,37 +475,24 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
 def main():
-    # 1. Запускаем веб-сервер Flask в фоновом потоке
-    # Это нужно только для того, чтобы Render видел, что приложение "живо"
-    try:
-        port = int(os.environ.get('PORT', 10000))
-        threading.Thread(
-            target=lambda: app.run(host='0.0.0.0', port=port, use_reloader=False), 
-            daemon=True
-        ).start()
-        logger.info(f"Web server started on port {port}")
-    except Exception as e:
-        logger.error(f"Could not start Flask: {e}")
-
-    # 2. Настраиваем и запускаем Telegram бота
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Создаем приложение бота
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрация команд
+    # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("top", top_hits))
-    
-    # Регистрация обработчиков сообщений и кнопок
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Обработка ошибок
     application.add_error_handler(error_handler)
     
-    # Запуск процесса получения сообщений
-    logger.info("Bot is polling...")
-    application.run_polling(drop_pending_updates=True)
+    # Запускаем бота
+    logger.info("Bot started!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
-    
