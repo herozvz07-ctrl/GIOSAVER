@@ -22,38 +22,42 @@ router = Router()
 user_data = {}
 EMOJI_NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
 
-# ================== ЛОГИКА СКАЧИВАНИЯ ==================
+# ================== УЛУЧШЕННАЯ ЛОГИКА СКАЧИВАНИЯ ==================
 async def download_media(url: str, mode="audio"):
     uid = str(uuid.uuid4())[:8]
     if not os.path.exists("downloads"):
         os.makedirs("downloads")
     
-    # Настройки для видео (Insta/TikTok) или Аудио (YouTube)
     if mode == "video":
-        path = f"downloads/{uid}.mp4"
+        output_template = f"downloads/{uid}.mp4"
         ydl_opts = {
             'format': 'best',
-            'outtmpl': path,
+            'outtmpl': output_template,
             'quiet': True,
+            'no_warnings': True,
         }
     else:
-        path = f"downloads/{uid}.mp3"
+        # Для аудио важно правильно указать пост-процессинг
+        output_template = f"downloads/{uid}.%(ext)s"
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': f"downloads/{uid}.%(ext)s",
+            'outtmpl': output_template,
+            'quiet': True,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'quiet': True,
         }
 
     loop = asyncio.get_event_loop()
     def run_ydl():
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            return info.get("title", "Файл"), path
+            title = info.get("title", "Unknown")
+            # yt-dlp меняет расширение после обработки, проверяем итоговый файл
+            final_path = f"downloads/{uid}.mp4" if mode == "video" else f"downloads/{uid}.mp3"
+            return title, final_path
             
     return await loop.run_in_executor(None, run_ydl)
 
@@ -62,92 +66,99 @@ async def download_media(url: str, mode="audio"):
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "✨ <b>Добро пожаловать!</b>\n\n"
-        "Я помогу тебе найти музыку или скачать видео.\n"
-        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-        "🔹 <b>Просто напиши название песни</b>\n"
-        "🔹 <b>Или скинь ссылку (Instagram Reels / TikTok)</b>",
+        "🎧 <b>Music & Video Saver</b>\n\n"
+        "• Пришли <b>название</b> — чтобы найти музыку\n"
+        "• Пришли <b>ссылку</b> — чтобы скачать Reels/TikTok\n"
     )
 
 @router.message(F.text)
 async def handle_message(message: types.Message):
     query = message.text.strip()
     
-    # Если это ссылка (Instagram/TikTok/YouTube)
-    if query.startswith(("http://", "https://")):
-        wait_msg = await message.answer("⏳ <i>Обрабатываю ссылку...</i>")
+    if query.startswith(("http", "https")):
+        wait_msg = await message.answer("⏳ <i>Скачиваю видео...</i>")
         try:
-            # Скачиваем видео
             title, path = await download_media(query, mode="video")
             video = FSInputFile(path)
             
-            # Кнопка "Найти музыку" под видео
+            # Кнопка извлечения звука (передаем URL)
             kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🎵 Найти музыку из видео", callback_data=f"search_music")
+                InlineKeyboardButton(text="🎵 Вырезать звук", callback_data=f"extaudio_{uuid.uuid4().hex[:8]}")
             ]])
+            # Сохраняем URL видео для извлечения звука
+            user_data[list(kb.inline_keyboard[0][0].callback_data.split('_'))[1]] = query
             
-            await message.answer_video(video=video, caption=f"✅ <b>{title}</b>", reply_markup=kb)
+            await message.answer_video(video=video, caption=f"✅ {title}", reply_markup=kb)
             await wait_msg.delete()
             if os.path.exists(path): os.remove(path)
         except Exception as e:
-            await wait_msg.edit_text(f"⚠️ Не удалось скачать видео.\nВозможно, профиль закрыт.")
+            print(f"Error Video: {e}")
+            await wait_msg.edit_text("⚠️ Ошибка. Проверь, что ссылка открыта.")
         return
 
-    # Если это просто текст — ищем музыку
+    # Поиск музыки
     wait_msg = await message.answer(f"🔍 Ищу <b>{query}</b>...")
     try:
-        loop = asyncio.get_event_loop()
         def get_yt():
-            # Поиск через YouTube (ytsearch)
             with YoutubeDL({"quiet": True, "extract_flat": True}) as ydl:
                 return ydl.extract_info(f"ytsearch8:{query}", download=False).get("entries", [])
 
-        results = await loop.run_in_executor(None, get_yt)
+        results = await asyncio.get_event_loop().run_in_executor(None, get_yt)
         if not results:
             await wait_msg.edit_text("❌ Ничего не найдено.")
             return
 
-        # Формируем сетку кнопок 4 в ряд
         buttons = []
-        text = "<b>🎶 Выберите подходящий трек:</b>\n\n"
-        
+        text = "<b>🎶 Результаты поиска:</b>\n\n"
         row = []
         for i, item in enumerate(results):
             rid = str(uuid.uuid4())[:8]
             user_data[rid] = item["url"]
-            text += f"{EMOJI_NUMS[i]} {item['title'][:40]}...\n"
-            
+            text += f"{EMOJI_NUMS[i]} {item['title'][:45]}\n"
             row.append(InlineKeyboardButton(text=EMOJI_NUMS[i], callback_data=f"dl_{rid}"))
-            if len(row) == 4: # По 4 кнопки в ряд
+            if len(row) == 4:
                 buttons.append(row)
                 row = []
         if row: buttons.append(row)
 
         await wait_msg.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
     except Exception as e:
-        await message.answer("❌ Произошла ошибка при поиске.")
+        print(f"Error Search: {e}")
+        await wait_msg.edit_text("❌ Ошибка поиска.")
 
 @router.callback_query(F.data.startswith("dl_"))
 async def handle_dl(callback: types.CallbackQuery):
-    url = user_data.get(callback.data.split("_")[1])
+    rid = callback.data.split("_")[1]
+    url = user_data.get(rid)
     if not url:
-        await callback.answer("Ошибка: поиск устарел.")
+        await callback.answer("Ошибка: попробуй найти заново.")
         return
 
-    await callback.message.edit_text("📥 <b>Загрузка трека...</b>")
+    await callback.message.edit_text("📥 <b>Загрузка...</b>")
     try:
         title, path = await download_media(url, mode="audio")
-        audio = FSInputFile(path)
-        await callback.message.answer_audio(audio=audio, caption=f"🎶 <b>{title}</b>")
+        await callback.message.answer_audio(audio=FSInputFile(path), caption=f"🎶 {title}")
         if os.path.exists(path): os.remove(path)
         await callback.message.delete()
     except Exception as e:
-        await callback.message.answer("❌ Ошибка при скачивании.")
+        print(f"Error Download: {e}")
+        await callback.message.answer("❌ Ошибка при конвертации в MP3.")
 
-@router.callback_query(F.data == "search_music")
-async def find_vid_music(callback: types.CallbackQuery):
-    await callback.answer("Эта функция будет искать музыку из Reels (в разработке)", show_alert=True)
+@router.callback_query(F.data.startswith("extaudio_"))
+async def extract_audio_callback(callback: types.CallbackQuery):
+    rid = callback.data.split("_")[1]
+    url = user_data.get(rid)
+    if not url:
+        await callback.answer("Ссылка потеряна, скинь видео еще раз.")
+        return
+
+    await callback.answer("Извлекаю звук...")
+    try:
+        title, path = await download_media(url, mode="audio")
+        await callback.message.answer_audio(audio=FSInputFile(path), caption=f"🎵 Звук из видео: {title}")
+        if os.path.exists(path): os.remove(path)
+    except Exception as e:
+        await callback.message.answer("❌ Не удалось извлечь звук.")
 
 # ================== ЗАПУСК ==================
 async def on_startup(bot: Bot):
