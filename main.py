@@ -311,24 +311,37 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
 def main():
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Создаем приложение бота
+    # 1. Запускаем веб-сервер Flask в фоновом потоке
+    # Это нужно только для того, чтобы Render видел, что приложение "живо"
+    try:
+        port = int(os.environ.get('PORT', 10000))
+        threading.Thread(
+            target=lambda: app.run(host='0.0.0.0', port=port, use_reloader=False), 
+            daemon=True
+        ).start()
+        logger.info(f"Web server started on port {port}")
+    except Exception as e:
+        logger.error(f"Could not start Flask: {e}")
+
+    # 2. Настраиваем и запускаем Telegram бота
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрируем обработчики
+    # Регистрация команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("top", top_hits))
+    
+    # Регистрация обработчиков сообщений и кнопок
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Обработка ошибок
     application.add_error_handler(error_handler)
     
-    # Запускаем бота
-    logger.info("Bot started!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Запуск процесса получения сообщений
+    logger.info("Bot is polling...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
+    
