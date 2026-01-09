@@ -284,23 +284,28 @@ async def search_music(query, limit=10):
         return []
 
 # Скачивание музыки
-async def download_music(track_url, track_id):
-    """Скачивание превью трека (30 сек) через Deezer"""
+async def download_music(query_text):
+    """Скачивание полной версии через YouTube (yt-dlp)"""
     try:
-        # Получаем информацию о треке
-        response = requests.get(f"https://api.deezer.com/track/{track_id}", timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            preview_url = data.get('preview')
-            
-            if preview_url:
-                # Скачиваем превью
-                audio_response = requests.get(preview_url, timeout=30)
-                if audio_response.status_code == 200:
-                    return audio_response.content
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = os.path.join(temp_dir, 'audio.mp3')
+            # Ищем на YouTube и качаем только аудио
+            command = [
+                './bin/yt-dlp',
+                '--extract-audio',
+                '--audio-format', 'mp3',
+                '--noplaylist',
+                '--limit-rate', '5M',
+                '-o', output_path,
+                f"ytsearch1:{query_text}"
+            ]
+            result = subprocess.run(command, capture_output=True, timeout=90)
+            if result.returncode == 0 and os.path.exists(output_path):
+                with open(output_path, 'rb') as f:
+                    return f.read()
         return None
     except Exception as e:
-        logger.error(f"Download error: {e}")
+        logger.error(f"Full music download error: {e}")
         return None
 
 # Обработка текстовых сообщений (поиск или ссылки)
