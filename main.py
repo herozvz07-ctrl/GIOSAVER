@@ -11,7 +11,8 @@ from yt_dlp import YoutubeDL
 # ================== КОНФИГУРАЦИЯ ==================
 TOKEN = os.getenv("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL")  # Например, https://my-bot.onrender.com
-PORT = int(os.getenv("PORT", 5000))
+raw_port = os.getenv("PORT")
+PORT = int(raw_port) if raw_port and raw_port.strip() else 5000
 
 bot = Bot(token=TOKEN, parse_mode="HTML")
 dp = Dispatcher()
