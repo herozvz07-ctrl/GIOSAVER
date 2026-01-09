@@ -2,19 +2,26 @@ import os
 import asyncio
 import uuid
 from aiogram import Bot, Dispatcher, types, F, Router
+# Добавляем этот импорт:
+from aiogram.client.default import DefaultBotProperties 
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BufferedInputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from yt_dlp import YoutubeDL
 
 # ================== КОНФИГУРАЦИЯ ==================
 TOKEN = os.getenv("BOT_TOKEN")
-APP_URL = os.getenv("APP_URL")  # Например, https://my-bot.onrender.com
+APP_URL = os.getenv("APP_URL") 
 raw_port = os.getenv("PORT")
 PORT = int(raw_port) if raw_port and raw_port.strip() else 5000
 
-bot = Bot(token=TOKEN, parse_mode="HTML")
+# ИСПРАВЛЕННАЯ СТРОКА:
+bot = Bot(
+    token=TOKEN, 
+    default=DefaultBotProperties(parse_mode="HTML")
+)
+
 dp = Dispatcher()
 router = Router()
 
